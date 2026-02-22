@@ -17,15 +17,7 @@ async function main(): Promise<void> {
   logger.info(`Mode: ${config.mode.toUpperCase()}`);
   logger.info(`Minecraft Server: ${config.minecraft.host}:${config.minecraft.port}`);
   logger.info(`Bot Username: ${config.minecraft.username}`);
-
-  if (config.mode === 'terminal') {
-    logger.info(`AI Provider: ${config.ai.provider.toUpperCase()}`);
-    const model = config.ai.provider === 'openai'
-      ? config.ai.openai.model
-      : config.ai.claude.model;
-    logger.info(`AI Model: ${model}`);
-  }
-
+  logger.info(`AI Model: ${config.ai.model}`);
   logger.info('='.repeat(60));
 
   activeMode = config.mode === 'mcp' ? new MCPMode() : new TerminalMode();

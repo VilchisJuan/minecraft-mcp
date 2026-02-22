@@ -1,4 +1,3 @@
-import crypto from 'crypto';
 import { config } from '../utils/config-loader';
 import { logger } from '../utils/logger';
 
@@ -25,25 +24,5 @@ export class PasswordManager {
 
   getPassword(): string {
     return this.password;
-  }
-
-  static generatePassword(length = 16): string {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    const bytes = crypto.randomBytes(length);
-
-    let output = '';
-    for (let i = 0; i < length; i += 1) {
-      output += chars[bytes[i] % chars.length];
-    }
-
-    return output;
-  }
-
-  static hashPasswordForLogging(password: string): string {
-    return crypto
-      .createHash('sha256')
-      .update(password)
-      .digest('hex')
-      .slice(0, 8);
   }
 }

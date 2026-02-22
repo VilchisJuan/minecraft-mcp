@@ -41,3 +41,5 @@ Thumbs.db
 # Project-specific local material
 first_implementation/
 schemas/*.litematic
+.claude/
+.cursorrules/

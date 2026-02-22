@@ -102,6 +102,9 @@ export class TerminalMode {
       case 'follow':
         await this.handleFollow(args);
         return;
+      case 'mine':
+        await this.handleMine(args);
+        return;
       case 'stop':
         this.botManager.stopMovement();
         logger.info('Movement stopped');
@@ -154,6 +157,32 @@ export class TerminalMode {
     logger.info(`Following ${username} with distance ${distance}`);
   }
 
+  private async handleMine(args: string[]): Promise<void> {
+    if (args.length < 6) {
+      logger.warn('Usage: /mine <x1> <y1> <z1> <x2> <y2> <z2>');
+      return;
+    }
+
+    const x1 = Number(args[0]);
+    const y1 = Number(args[1]);
+    const z1 = Number(args[2]);
+    const x2 = Number(args[3]);
+    const y2 = Number(args[4]);
+    const z2 = Number(args[5]);
+
+    if ([x1, y1, z1, x2, y2, z2].some((value) => Number.isNaN(value))) {
+      logger.warn('Coordinates must be valid numbers');
+      return;
+    }
+
+    logger.info(`Mining area (${x1}, ${y1}, ${z1}) -> (${x2}, ${y2}, ${z2})...`);
+    const result = await this.botManager.mineArea(
+      { x: x1, y: y1, z: z1 },
+      { x: x2, y: y2, z: z2 },
+    );
+    logger.info(`Mining completed. Mined ${result.minedBlocks} blocks, skipped ${result.skippedBlocks}`);
+  }
+
   private printStatus(): void {
     const state = this.botManager.getState();
     const authState = this.botManager.getAuthState();
@@ -195,6 +224,7 @@ export class TerminalMode {
     logger.info('/say <message>         Send chat message');
     logger.info('/goto <x> <y> <z>      Move to coordinates');
     logger.info('/follow <player> [d]   Follow a player');
+    logger.info('/mine <x1> <y1> <z1> <x2> <y2> <z2>   Mine all diggable blocks in area');
     logger.info('/stop                  Stop current movement');
     logger.info('/quit                  Disconnect and exit');
     logger.info('Any input without "/" is sent as normal chat.');

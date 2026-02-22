@@ -19,8 +19,7 @@ export class MCPMode {
     await this.botManager.connect();
     this.started = true;
 
-    logger.warn('MCP protocol tool server is not implemented in this scope.');
-    logger.warn('Task 5 can extend this mode with actual MCP handlers.');
+    logger.info('MCP mode started. Bot is listening for in-game commands via LLM.');
   }
 
   async stop(): Promise<void> {
