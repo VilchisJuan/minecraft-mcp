@@ -3,21 +3,13 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 export type OperatingMode = 'mcp' | 'terminal';
-export type AIProvider = 'openai' | 'claude';
 export type MinecraftAuthMode = 'microsoft' | 'offline';
 
 export interface Config {
   mode: OperatingMode;
   ai: {
-    provider: AIProvider;
-    openai: {
-      apiKey: string;
-      model: string;
-    };
-    claude: {
-      apiKey: string;
-      model: string;
-    };
+    apiKey: string;
+    model: string;
   };
   minecraft: {
     host: string;
@@ -43,8 +35,6 @@ export interface Config {
   advanced: {
     maxReconnectAttempts: number;
     reconnectDelayMs: number;
-    enableViewer: boolean;
-    viewerPort: number;
     movementTimeoutMs: number;
   };
 }
@@ -82,15 +72,8 @@ class ConfigLoader {
     return {
       mode: (process.env.MODE as OperatingMode) ?? 'terminal',
       ai: {
-        provider: (process.env.AI_PROVIDER as AIProvider) ?? 'openai',
-        openai: {
-          apiKey: process.env.OPENAI_API_KEY ?? '',
-          model: process.env.OPENAI_MODEL ?? 'gpt-4o-mini',
-        },
-        claude: {
-          apiKey: process.env.ANTHROPIC_API_KEY ?? '',
-          model: process.env.ANTHROPIC_MODEL ?? 'claude-3-5-haiku-20241022',
-        },
+        apiKey: process.env.OPENAI_API_KEY ?? '',
+        model: process.env.OPENAI_MODEL ?? 'gpt-4o-mini',
       },
       minecraft: {
         host: process.env.MC_HOST ?? 'localhost',
@@ -116,8 +99,6 @@ class ConfigLoader {
       advanced: {
         maxReconnectAttempts: parseNumber(process.env.MAX_RECONNECT_ATTEMPTS, 10, 'MAX_RECONNECT_ATTEMPTS'),
         reconnectDelayMs: parseNumber(process.env.RECONNECT_DELAY_MS, 5000, 'RECONNECT_DELAY_MS'),
-        enableViewer: parseBoolean(process.env.ENABLE_VIEWER, false),
-        viewerPort: parseNumber(process.env.VIEWER_PORT, 3000, 'VIEWER_PORT'),
         movementTimeoutMs: parseNumber(process.env.MOVEMENT_TIMEOUT_MS, 45000, 'MOVEMENT_TIMEOUT_MS'),
       },
     };
@@ -129,25 +110,13 @@ class ConfigLoader {
       throw new Error(`MODE must be one of: ${validModes.join(', ')}`);
     }
 
-    const validProviders: AIProvider[] = ['openai', 'claude'];
-    if (!validProviders.includes(this.config.ai.provider)) {
-      throw new Error(`AI_PROVIDER must be one of: ${validProviders.join(', ')}`);
-    }
-
     const validAuthModes: MinecraftAuthMode[] = ['microsoft', 'offline'];
     if (!validAuthModes.includes(this.config.minecraft.auth)) {
       throw new Error(`MC_AUTH must be one of: ${validAuthModes.join(', ')}`);
     }
 
-    if (this.config.mode === 'terminal') {
-      const apiKey = this.config.ai.provider === 'openai'
-        ? this.config.ai.openai.apiKey
-        : this.config.ai.claude.apiKey;
-
-      if (!apiKey) {
-        const variable = this.config.ai.provider === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY';
-        throw new Error(`Terminal mode requires ${variable} in .env`);
-      }
+    if (!this.config.ai.apiKey) {
+      throw new Error('OPENAI_API_KEY is required in .env');
     }
 
     if (!this.config.minecraft.host.trim()) {

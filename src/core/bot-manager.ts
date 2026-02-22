@@ -1,8 +1,11 @@
-﻿import { Bot, createBot } from 'mineflayer';
+import { Bot, createBot } from 'mineflayer';
 import { Vec3 } from 'vec3';
+import { Block } from 'prismarine-block';
+import { Item } from 'prismarine-item';
 import { AuthHandler, AuthState } from '../auth/auth-handler';
 import { PathfinderController, MovementStatus, MoveToOptions } from '../movement/pathfinder';
 import { InGameControl } from '../personality/in-game-control';
+import { SurvivalBehavior } from '../survival/survival-behavior';
 import { config } from '../utils/config-loader';
 import { activityLogger, logger } from '../utils/logger';
 
@@ -25,6 +28,32 @@ export interface BotState {
   };
 }
 
+export interface AreaCoordinates {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export interface MineAreaResult {
+  minedBlocks: number;
+  skippedBlocks: number;
+}
+
+interface AreaBounds {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  minZ: number;
+  maxZ: number;
+}
+
+type BotWithHarvestPathfinder = Bot & {
+  pathfinder?: {
+    bestHarvestTool?: (block: Block) => Item | null;
+  };
+};
+
 export class BotManager {
   public bot: Bot | null = null;
   private reconnectAttempts = 0;
@@ -33,6 +62,10 @@ export class BotManager {
   private authHandler: AuthHandler | null = null;
   private movementController: PathfinderController | null = null;
   private inGameControl: InGameControl | null = null;
+  private survivalBehavior: SurvivalBehavior | null = null;
+  private miningInProgress = false;
+  private abortMining = false;
+  private stopSignal = 0;
 
   async connect(): Promise<Bot> {
     if (this.bot) {
@@ -60,6 +93,7 @@ export class BotManager {
     this.setupAuthHandler();
     this.setupMovement();
     this.setupInGameControl();
+    this.setupSurvivalBehavior();
 
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -236,6 +270,31 @@ export class BotManager {
     );
   }
 
+  private setupSurvivalBehavior(): void {
+    if (!this.bot) {
+      return;
+    }
+
+    this.survivalBehavior = new SurvivalBehavior(this.bot, () => this.isBotBusy());
+
+    this.bot.once('spawn', () => {
+      this.survivalBehavior?.start();
+    });
+  }
+
+  isBotBusy(): boolean {
+    if (this.miningInProgress) {
+      return true;
+    }
+
+    const movement = this.getMovementStatus();
+    if (movement?.moving) {
+      return true;
+    }
+
+    return false;
+  }
+
   private handleReconnect(): void {
     if (this.isShuttingDown) {
       logger.info('Shutdown in progress, skipping reconnect');
@@ -337,7 +396,109 @@ export class BotManager {
   }
 
   stopMovement(): void {
+    this.stopSignal += 1;
+    this.abortMining = true;
+    this.bot?.stopDigging();
     this.movementController?.stop();
+  }
+
+  getStopSignal(): number {
+    return this.stopSignal;
+  }
+
+  wasStoppedAfter(signal: number): boolean {
+    return this.stopSignal !== signal;
+  }
+
+  async mineArea(from: AreaCoordinates, to: AreaCoordinates): Promise<MineAreaResult> {
+    if (!this.isReady()) {
+      throw new Error('Bot is not ready');
+    }
+
+    if (!this.movementController) {
+      throw new Error('Movement controller is unavailable');
+    }
+
+    if (!this.movementController.isInitialized()) {
+      throw new Error('Movement controller is not initialized yet (wait for spawn)');
+    }
+
+    if (this.miningInProgress) {
+      throw new Error('A mining task is already running');
+    }
+
+    this.miningInProgress = true;
+    this.abortMining = false;
+    this.movementController.stop();
+
+    const bounds = this.buildAreaBounds(from, to);
+    const center = this.buildAreaCenter(bounds);
+    const ignoredBlocks = new Set<string>();
+    let minedBlocks = 0;
+    let skippedBlocks = 0;
+    let shouldRescanAfterReposition = true;
+
+    activityLogger.info(
+      `Mining area started: (${bounds.minX}, ${bounds.minY}, ${bounds.minZ}) -> (${bounds.maxX}, ${bounds.maxY}, ${bounds.maxZ})`,
+    );
+
+    try {
+      while (true) {
+        if (this.abortMining) {
+          break;
+        }
+
+        const targetBlock = this.findNextBlockInArea(bounds, ignoredBlocks);
+        if (!targetBlock) {
+          if (!shouldRescanAfterReposition) {
+            break;
+          }
+
+          shouldRescanAfterReposition = false;
+          await this.moveTo(center.x, center.y, center.z, {
+            range: 3,
+            timeoutMs: config.advanced.movementTimeoutMs,
+          });
+          continue;
+        }
+
+        shouldRescanAfterReposition = true;
+
+        try {
+          const mined = await this.mineBlock(targetBlock.position);
+          if (mined) {
+            minedBlocks += 1;
+          } else {
+            skippedBlocks += 1;
+            ignoredBlocks.add(this.blockKey(targetBlock.position));
+          }
+        } catch (error) {
+          // If mining was aborted via stopMovement, exit cleanly
+          if (this.abortMining) {
+            break;
+          }
+          skippedBlocks += 1;
+          ignoredBlocks.add(this.blockKey(targetBlock.position));
+          logger.warn(`Skipping block at ${this.formatPosition(targetBlock.position)}: ${this.describeError(error)}`);
+        }
+      }
+
+      const wasStopped = this.abortMining;
+
+      activityLogger.info(
+        wasStopped
+          ? `Mining stopped by user: mined=${minedBlocks}, skipped=${skippedBlocks}`
+          : `Mining area completed: mined=${minedBlocks}, skipped=${skippedBlocks}, area=(${bounds.minX}, ${bounds.minY}, ${bounds.minZ}) -> (${bounds.maxX}, ${bounds.maxY}, ${bounds.maxZ})`,
+      );
+
+      return {
+        minedBlocks,
+        skippedBlocks,
+      };
+    } finally {
+      this.miningInProgress = false;
+      this.abortMining = false;
+    }
   }
 
   async disconnect(): Promise<void> {
@@ -351,6 +512,11 @@ export class BotManager {
     if (this.movementController) {
       this.movementController.destroy();
       this.movementController = null;
+    }
+
+    if (this.survivalBehavior) {
+      this.survivalBehavior.stop();
+      this.survivalBehavior = null;
     }
 
     if (this.inGameControl) {
@@ -406,6 +572,159 @@ export class BotManager {
     return `(${Math.floor(position.x)}, ${Math.floor(position.y)}, ${Math.floor(position.z)})`;
   }
 
+  private buildAreaBounds(from: AreaCoordinates, to: AreaCoordinates): AreaBounds {
+    const fromX = Math.floor(from.x);
+    const fromY = Math.floor(from.y);
+    const fromZ = Math.floor(from.z);
+    const toX = Math.floor(to.x);
+    const toY = Math.floor(to.y);
+    const toZ = Math.floor(to.z);
+
+    return {
+      minX: Math.min(fromX, toX),
+      maxX: Math.max(fromX, toX),
+      minY: Math.min(fromY, toY),
+      maxY: Math.max(fromY, toY),
+      minZ: Math.min(fromZ, toZ),
+      maxZ: Math.max(fromZ, toZ),
+    };
+  }
+
+  private buildAreaCenter(bounds: AreaBounds): AreaCoordinates {
+    return {
+      x: Math.floor((bounds.minX + bounds.maxX) / 2),
+      y: bounds.maxY + 1,
+      z: Math.floor((bounds.minZ + bounds.maxZ) / 2),
+    };
+  }
+
+  private findNextBlockInArea(bounds: AreaBounds, ignoredBlocks: Set<string>): Block | null {
+    if (!this.bot?.entity) {
+      return null;
+    }
+
+    const dx = bounds.maxX - bounds.minX + 1;
+    const dy = bounds.maxY - bounds.minY + 1;
+    const dz = bounds.maxZ - bounds.minZ + 1;
+    const searchDistance = Math.max(32, Math.ceil(Math.sqrt((dx * dx) + (dy * dy) + (dz * dz))) + 8);
+
+    const matches = this.bot.findBlocks({
+      point: this.bot.entity.position,
+      maxDistance: searchDistance,
+      count: 128,
+      matching: (block: Block | null) => {
+        if (!this.isDiggableBlock(block)) {
+          return false;
+        }
+
+        // Mineflayer can call this matcher with palette blocks that do not have
+        // a world position. Returning true keeps eligible sections in the scan.
+        if (!block.position) {
+          return true;
+        }
+
+        return (
+          this.isWithinArea(block.position, bounds)
+          && !ignoredBlocks.has(this.blockKey(block.position))
+        );
+      },
+    });
+
+    for (const position of matches) {
+      const block = this.bot.blockAt(position);
+      if (!this.isDiggableBlock(block) || !block?.position) {
+        continue;
+      }
+
+      if (
+        !this.isWithinArea(block.position, bounds)
+        || ignoredBlocks.has(this.blockKey(block.position))
+      ) {
+        continue;
+      }
+
+      return block;
+    }
+
+    return null;
+  }
+
+  private async mineBlock(position: Vec3): Promise<boolean> {
+    if (!this.bot) {
+      throw new Error('Bot is not ready');
+    }
+
+    await this.moveTo(position.x, position.y, position.z, {
+      range: 2,
+      timeoutMs: config.advanced.movementTimeoutMs,
+    });
+
+    const block = this.bot.blockAt(position);
+    if (!this.isDiggableBlock(block)) {
+      return false;
+    }
+
+    await this.equipBestToolForBlock(block);
+
+    if (!this.bot.canDigBlock(block)) {
+      return false;
+    }
+
+    await this.bot.lookAt(block.position.offset(0.5, 0.5, 0.5), true);
+    await this.bot.dig(block, true);
+    return true;
+  }
+
+  private async equipBestToolForBlock(block: Block): Promise<void> {
+    if (!this.bot) {
+      return;
+    }
+
+    const botWithPathfinder = this.bot as BotWithHarvestPathfinder;
+    const bestTool = botWithPathfinder.pathfinder?.bestHarvestTool?.(block) ?? null;
+    if (!bestTool) {
+      return;
+    }
+
+    if (this.bot.heldItem?.slot === bestTool.slot) {
+      return;
+    }
+
+    try {
+      await this.bot.equip(bestTool, 'hand');
+    } catch (error) {
+      logger.warn(`Failed to equip best tool ${bestTool.name} for ${block.name}: ${this.describeError(error)}`);
+    }
+  }
+
+  private isDiggableBlock(block: Block | null | undefined): block is Block {
+    if (!block) {
+      return false;
+    }
+
+    return block.name !== 'air' && block.boundingBox !== 'empty' && block.diggable;
+  }
+
+  private isWithinArea(position: Vec3 | null | undefined, bounds: AreaBounds): boolean {
+    if (!position) {
+      return false;
+    }
+
+    const x = Math.floor(position.x);
+    const y = Math.floor(position.y);
+    const z = Math.floor(position.z);
+
+    return (
+      x >= bounds.minX && x <= bounds.maxX
+      && y >= bounds.minY && y <= bounds.maxY
+      && z >= bounds.minZ && z <= bounds.maxZ
+    );
+  }
+
+  private blockKey(position: Vec3): string {
+    return `${Math.floor(position.x)},${Math.floor(position.y)},${Math.floor(position.z)}`;
+  }
+
   private describeError(error: unknown): string {
     if (error instanceof Error) {
       return error.stack ?? error.message;
@@ -414,3 +733,4 @@ export class BotManager {
     return String(error);
   }
 }
+
